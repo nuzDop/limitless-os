@@ -62,12 +62,14 @@ clean:
 	@echo "  CLEAN"
 	@rm -rf $(BUILD_DIR)
 
-# Generate dependencies
+# Generate dependencies, but not for 'clean'
+ifneq ($(MAKECMDGOALS),clean)
 -include $(OBJS:.o=.d)
 
 $(OBJ_DIR)/%.d: %.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -MM -MT $(OBJ_DIR)/$*.o $< > $@
+endif
 
 # Debug build
 debug: CFLAGS += -DDEBUG -g3
