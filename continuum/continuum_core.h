@@ -34,7 +34,9 @@
 
 typedef uint64_t quantum_id_t;
 typedef uint64_t capability_t;
-typedef void* memory_domain_t;
+
+struct memory_domain;
+typedef struct memory_domain memory_domain_t;
 
 // ABI Modes - The three faces of Continuum
 typedef enum {
@@ -166,7 +168,7 @@ typedef struct quantum_context {
     // Execution
     void* entry_point;
     register_state_t* register_state;
-    memory_domain_t memory_domain;
+    memory_domain_t* memory_domain;
     
     // Hierarchy
     quantum_id_t parent_qid;

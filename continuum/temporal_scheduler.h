@@ -34,13 +34,6 @@ typedef enum {
     BLOCK_WAIT
 } block_reason_t;
 
-// Spinlock
-typedef struct {
-    volatile uint32_t lock;
-} spinlock_t;
-
-#define SPINLOCK_INIT {0}
-
 // =============================================================================
 // Data Structures
 // =============================================================================
@@ -121,22 +114,5 @@ void temporal_get_stats(temporal_stats_t* stats);
 // Context switching
 void temporal_save_context(quantum_context_t* quantum);
 void temporal_load_context(quantum_context_t* quantum);
-
-// Spinlock operations
-static inline void spinlock_init(spinlock_t* lock) {
-    lock->lock = 0;
-}
-
-static inline void spinlock_acquire(spinlock_t* lock) {
-    while (__sync_lock_test_and_set(&lock->lock, 1)) {
-        while (lock->lock) {
-            __asm__ __volatile__("pause");
-        }
-    }
-}
-
-static inline void spinlock_release(spinlock_t* lock) {
-    __sync_lock_release(&lock->lock);
-}
 
 #endif /* TEMPORAL_SCHEDULER_H */

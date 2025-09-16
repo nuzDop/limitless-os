@@ -283,7 +283,7 @@ int64_t continuum_handle_request(quantum_context_t* quantum,
 }
 
 // Native request handler
-static int64_t handle_native_request(quantum_context_t* quantum,
+int64_t handle_native_request(quantum_context_t* quantum,
                                      system_request_t* request) {
     switch (request->request_id) {
         case SYSREQ_MEMORY_ALLOCATE:

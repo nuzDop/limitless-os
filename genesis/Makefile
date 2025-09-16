@@ -1,103 +1,72 @@
 # Genesis Bootloader Makefile
 # Unified BIOS/UEFI bootloader
 
-# Architecture
-ARCH = x86_64
+# --- Tools ---
+CC_UEFI = gcc
+AS_BIOS = nasm
+OBJCOPY = objcopy
+LD = ld
 
-# Directories
+# --- Architecture & Paths ---
+ARCH = x86_64
 BUILD_DIR = build
 OBJ_DIR = $(BUILD_DIR)/obj
 OUTPUT_DIR = output
 
-# Tools
-AS = nasm
-CC = gcc
-LD = ld
-OBJCOPY = objcopy
-
-# UEFI paths
+# GNU-EFI paths
 EFI_CRT0 = /usr/lib/crt0-efi-$(ARCH).o
 EFI_LDSCRIPT = /usr/lib/elf_$(ARCH)_efi.lds
 EFI_INCLUDE = /usr/include/efi
-EFI_INCLUDES = -I$(EFI_INCLUDE) -I$(EFI_INCLUDE)/$(ARCH) -I$(EFI_INCLUDE)/protocol
 EFI_LIB = /usr/lib
 
-# Flags
-CFLAGS = -ffreestanding -fno-stack-protector -fpic -fshort-wchar \
-         -mno-red-zone -Wall -Wextra -MMD -MP \
-         $(EFI_INCLUDES) -DEFI_FUNCTION_WRAPPER
+# --- Flags ---
+UEFI_CFLAGS = -ffreestanding -fno-stack-protector -fPIC -fshort-wchar \
+              -mno-red-zone -Wall -Wextra \
+              -I$(EFI_INCLUDE) -I$(EFI_INCLUDE)/$(ARCH)
 
-# UEFI-specific flags
-EFIFLAGS = -nostdlib -znocombreloc -T $(EFI_LDSCRIPT) -shared -Bsymbolic \
-           -L $(EFI_LIB) -L /usr/lib64
+# BIOS Assembler Flags
+BIOS_FLAGS = -f bin
 
-LDFLAGS = -nostdlib -n -T genesis_boot.ld
-
-# Source files
+# --- Files ---
 BIOS_ASM = genesis-bios.asm
 UEFI_C = genesis-uefi.c
-BOOT_C = genesis_boot.c
-
-# Output files
+UEFI_OBJ = $(OBJ_DIR)/genesis-uefi.o
 BIOS_BIN = $(OUTPUT_DIR)/genesis-bios.bin
 UEFI_EFI = $(OUTPUT_DIR)/genesis-uefi.efi
-HYBRID_BIN = $(OUTPUT_DIR)/genesis.bin
 
-# Object files
-UEFI_OBJ = $(OBJ_DIR)/genesis-uefi.o
-BOOT_OBJ = $(OBJ_DIR)/genesis_boot.o
+# --- Targets ---
+.PHONY: all clean directories uefi bios
 
-# Targets
-.PHONY: all clean directories uefi bios hybrid
-
-all: directories $(BIOS_BIN) $(UEFI_EFI)
+all: directories bios uefi
 
 directories:
-	@mkdir -p $(BUILD_DIR)
-	@mkdir -p $(OBJ_DIR)
-	@mkdir -p $(OUTPUT_DIR)
+	@mkdir -p $(BUILD_DIR) $(OBJ_DIR) $(OUTPUT_DIR)
 
-# BIOS bootloader - Direct binary generation (no ELF intermediate)
+# --- Build Rules ---
+
+# BIOS Bootloader
 $(BIOS_BIN): $(BIOS_ASM)
-	@echo "  AS      $< (flat binary)"
-	@$(AS) -f bin -o $@ $
+	@echo "  AS      $<"
+	@$(AS) $(BIOS_FLAGS) $< -o $@
 
-# UEFI bootloader
+# UEFI Bootloader (Multi-step process)
+
+# Step 1: Compile C source to an object file
 $(UEFI_OBJ): $(UEFI_C)
 	@echo "  CC      $<"
-	@$(CC) $(CFLAGS) -c $< -o $@
+	$(CC_UEFI) $(UEFI_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/genesis-uefi.so: $(UEFI_OBJ)
+# Step 2: Link the object into a correctly-formatted ELF using GCC as the driver
+$(BUILD_DIR)/genesis-uefi.elf: $(UEFI_OBJ)
 	@echo "  LD      $@"
-	@$(LD) $(EFIFLAGS) $(EFI_CRT0) $(UEFI_OBJ) -o $@ -lgnuefi -lefi
+	$(CC_UEFI) -nostdlib -Wl,-T,$(EFI_LDSCRIPT) -Wl,-Bsymbolic -o $@ $(EFI_CRT0) $< -L$(EFI_LIB) -lgnuefi -lefi
 
-$(UEFI_EFI): $(BUILD_DIR)/genesis-uefi.so
+# Step 3: Convert the ELF file to the final PE/COFF EFI format
+$(UEFI_EFI): $(BUILD_DIR)/genesis-uefi.elf
 	@echo "  OBJCOPY $@"
-	@$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic \
-	            -j .dynsym -j .rel -j .rela -j .reloc \
-	            --target=efi-app-$(ARCH) $< $@
+	@$(OBJCOPY) --target=efi-app-$(ARCH) $< $@
 
-# Boot core (if you have one)
-$(BOOT_OBJ): $(BOOT_C) genesis_boot.h
-	@echo "  CC      $<"
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-# Hybrid bootloader (if needed)
-$(HYBRID_BIN): $(BIOS_BIN) $(BOOT_OBJ)
-	@echo "  BUILD   $@"
-	@cp $(BIOS_BIN) $@
-	@# Pad to 1MB and append boot core
-	@dd if=/dev/zero bs=1024 count=1024 >> $@ 2>/dev/null
-	@cat $(BOOT_OBJ) >> $@
-
-# Clean
+# --- Maintenance Targets ---
 clean:
-	@echo "  CLEAN"
+	@echo "  CLEAN   Genesis"
 	@rm -rf $(BUILD_DIR) $(OUTPUT_DIR)
-
-# Debug info
-debug:
-	@echo "EFI_CRT0: $(EFI_CRT0)"
-	@echo "EFI_LDSCRIPT: $(EFI_LDSCRIPT)"
-	@ls -la $(EFI_CRT0) || echo "CRT0 not found"
-	@ls -la $(EFI_LDSCRIPT) || echo "LD script not found"
