@@ -1,0 +1,68 @@
+# Genesis Bootloader Makefile
+
+CC_UEFI = x86_64-w64-mingw32-gcc
+AS_BIOS = nasm
+OBJCOPY = objcopy
+
+UEFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
+              -fshort-wchar -mno-red-zone -maccumulate-outgoing-args
+UEFI_LDFLAGS = -nostdlib -Wl,-dll -shared -Wl,--subsystem,10 \
+               -Wl,--image-base,0x1000000 -e efi_main
+
+BIOS_FLAGS = -f bin
+
+BUILD_DIR = build
+OUTPUT_DIR = output
+
+all: bios uefi
+
+bios: $(OUTPUT_DIR)/genesis-bios.bin
+
+uefi: $(OUTPUT_DIR)/genesis-uefi.efi
+
+$(OUTPUT_DIR)/genesis-bios.bin: genesis-bios.asm
+	@mkdir -p $(OUTPUT_DIR)
+	$(AS_BIOS) $(BIOS_FLAGS) $< -o $@
+	@echo "✓ Built BIOS bootloader: $@"
+
+$(BUILD_DIR)/genesis-uefi.dll: genesis-uefi.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC_UEFI) $(UEFI_CFLAGS) $(UEFI_LDFLAGS) -o $@ $
+
+$(OUTPUT_DIR)/genesis-uefi.efi: $(BUILD_DIR)/genesis-uefi.dll
+	@mkdir -p $(OUTPUT_DIR)
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic -j .dynsym \
+	           -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc \
+	           --target=efi-app-x86_64 $< $@
+	@echo "✓ Built UEFI bootloader: $@"
+
+hybrid-iso: bios uefi
+	@mkdir -p $(OUTPUT_DIR)/iso/EFI/BOOT
+	@mkdir -p $(OUTPUT_DIR)/iso/EFI/limitless
+	@cp $(OUTPUT_DIR)/genesis-uefi.efi $(OUTPUT_DIR)/iso/EFI/BOOT/BOOTX64.EFI
+	@cp $(OUTPUT_DIR)/genesis-uefi.efi $(OUTPUT_DIR)/iso/EFI/limitless/genesis.efi
+	@xorriso -as mkisofs \
+	    -b genesis-bios.bin \
+	    -no-emul-boot \
+	    -boot-load-size 4 \
+	    -boot-info-table \
+	    -eltorito-alt-boot \
+	    -e EFI/BOOT/BOOTX64.EFI \
+	    -no-emul-boot \
+	    -isohybrid-gpt-basdat \
+	    -o $(OUTPUT_DIR)/limitless-boot.iso \
+	    $(OUTPUT_DIR)/iso
+	@echo "✓ Created hybrid ISO: $(OUTPUT_DIR)/limitless-boot.iso"
+
+clean:
+	@rm -rf $(BUILD_DIR) $(OUTPUT_DIR)
+	@echo "✓ Cleaned build artifacts"
+
+test-uefi: uefi
+	@qemu-system-x86_64 -bios /usr/share/ovmf/OVMF.fd \
+	    -drive file=fat:rw:$(OUTPUT_DIR)/esp,format=raw
+
+test-bios: bios
+	@qemu-system-x86_64 -drive file=$(OUTPUT_DIR)/genesis-bios.bin,format=raw
+
+.PHONY: all bios uefi hybrid-iso clean test-uefi test-bios

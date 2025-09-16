@@ -1,0 +1,98 @@
+# LimitlessOS Genesis Hybrid ISO Makefile
+
+# Configuration
+ISO_NAME = limitless-genesis-hybrid.iso
+BUILD_DIR = iso-build
+OUTPUT_DIR = output
+SCRIPT = create-hybrid-iso.sh
+
+# Tools
+XORRISO = xorriso
+MKISOFS = genisoimage
+DD = dd
+SHA256SUM = sha256sum
+QEMU = qemu-system-x86_64
+
+# Paths
+OVMF = /usr/share/ovmf/OVMF.fd
+SYSLINUX_PATH = /usr/lib/syslinux/bios
+
+# Targets
+.PHONY: all iso clean test-bios test-uefi burn help
+
+all: iso
+
+iso:
+	@echo "Building LimitlessOS Genesis Hybrid ISO..."
+	@bash $(SCRIPT)
+
+quick-iso:
+	@echo "Building ISO without recompiling bootloaders..."
+	@bash $(SCRIPT) --quick
+
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -rf $(BUILD_DIR)
+	@rm -f $(OUTPUT_DIR)/$(ISO_NAME)
+	@rm -f $(OUTPUT_DIR)/$(ISO_NAME).sha256
+	@rm -f $(OUTPUT_DIR)/$(ISO_NAME).md5
+	@echo "✓ Clean complete"
+
+test-bios: iso
+	@echo "Testing ISO in BIOS mode..."
+	$(QEMU) -m 2048 -cdrom $(OUTPUT_DIR)/$(ISO_NAME)
+
+test-uefi: iso
+	@echo "Testing ISO in UEFI mode..."
+	$(QEMU) -m 2048 -bios $(OVMF) -cdrom $(OUTPUT_DIR)/$(ISO_NAME)
+
+test-both:
+	@echo "Testing ISO in both BIOS and UEFI modes..."
+	@echo "Starting BIOS test in background..."
+	$(QEMU) -m 2048 -cdrom $(OUTPUT_DIR)/$(ISO_NAME) &
+	@sleep 2
+	@echo "Starting UEFI test..."
+	$(QEMU) -m 2048 -bios $(OVMF) -cdrom $(OUTPUT_DIR)/$(ISO_NAME)
+
+verify: iso
+	@echo "Verifying ISO integrity..."
+	@cd $(OUTPUT_DIR) && sha256sum -c $(ISO_NAME).sha256
+	@echo "✓ ISO verification passed"
+
+burn: iso
+	@echo "WARNING: This will write the ISO to a USB device!"
+	@echo "Available devices:"
+	@lsblk -d -o NAME,SIZE,MODEL
+	@echo ""
+	@read -p "Enter device (e.g., sdb): " device; \
+	read -p "Are you sure you want to write to /dev/$$device? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		sudo dd if=$(OUTPUT_DIR)/$(ISO_NAME) of=/dev/$$device bs=4M status=progress conv=fsync; \
+		echo "✓ ISO written to /dev/$$device"; \
+	else \
+		echo "Cancelled."; \
+	fi
+
+stats: iso
+	@echo "ISO Statistics:"
+	@echo "=================="
+	@stat -c "Size: %s bytes (%s MB)" $(OUTPUT_DIR)/$(ISO_NAME) \
+		$$(expr $$(stat -c%s $(OUTPUT_DIR)/$(ISO_NAME)) / 1048576)
+	@echo "Files in ISO:"
+	@isoinfo -l -i $(OUTPUT_DIR)/$(ISO_NAME) 2>/dev/null | wc -l
+	@echo "Bootable: $$(file $(OUTPUT_DIR)/$(ISO_NAME) | grep -o bootable || echo no)"
+
+help:
+	@echo "LimitlessOS Genesis Hybrid ISO Builder"
+	@echo "======================================="
+	@echo "Targets:"
+	@echo "  make iso        - Build the hybrid ISO"
+	@echo "  make quick-iso  - Build ISO without recompiling bootloaders"
+	@echo "  make clean      - Remove all build artifacts"
+	@echo "  make test-bios  - Test ISO in BIOS mode with QEMU"
+	@echo "  make test-uefi  - Test ISO in UEFI mode with QEMU"
+	@echo "  make test-both  - Test ISO in both modes simultaneously"
+	@echo "  make verify     - Verify ISO checksum"
+	@echo "  make burn       - Write ISO to USB device (requires sudo)"
+	@echo "  make stats      - Display ISO statistics"
+	@echo "  make help       - Show this help message"

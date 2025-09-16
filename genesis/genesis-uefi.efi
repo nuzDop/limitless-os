@@ -1,0 +1,886 @@
+/*
+ * Genesis UEFI Bootloader for LimitlessOS
+ * Build: x86_64-w64-mingw32-gcc -nostdlib -Wl,-dll -shared -Wl,--subsystem,10 
+ *        -e efi_main genesis-uefi.c -o genesis-uefi.efi
+ */
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+// UEFI Basic Types
+typedef uint16_t CHAR16;
+typedef uint64_t UINTN;
+typedef int64_t INTN;
+typedef void* EFI_HANDLE;
+typedef uint64_t EFI_STATUS;
+typedef void* EFI_EVENT;
+
+#define EFI_SUCCESS 0
+#define EFI_ERROR(x) (0x8000000000000000ULL | x)
+#define EFI_NOT_FOUND EFI_ERROR(14)
+
+// UEFI GUIDs
+typedef struct {
+    uint32_t Data1;
+    uint16_t Data2;
+    uint16_t Data3;
+    uint8_t Data4[8];
+} EFI_GUID;
+
+#define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID \
+    {0x9042a9de, 0x23dc, 0x4a38, {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}}
+
+#define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID \
+    {0x964e5b22, 0x6459, 0x11d2, {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}}
+
+#define EFI_LOADED_IMAGE_PROTOCOL_GUID \
+    {0x5b1b31a1, 0x9562, 0x11d2, {0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}}
+
+// Memory types
+typedef enum {
+    EfiReservedMemoryType,
+    EfiLoaderCode,
+    EfiLoaderData,
+    EfiBootServicesCode,
+    EfiBootServicesData,
+    EfiRuntimeServicesCode,
+    EfiRuntimeServicesData,
+    EfiConventionalMemory,
+    EfiUnusableMemory,
+    EfiACPIReclaimMemory,
+    EfiACPIMemoryNVS,
+    EfiMemoryMappedIO,
+    EfiMemoryMappedIOPortSpace,
+    EfiPalCode,
+    EfiPersistentMemory,
+    EfiMaxMemoryType
+} EFI_MEMORY_TYPE;
+
+// Memory descriptor
+typedef struct {
+    uint32_t Type;
+    uint32_t Pad;
+    uint64_t PhysicalStart;
+    uint64_t VirtualStart;
+    uint64_t NumberOfPages;
+    uint64_t Attribute;
+} EFI_MEMORY_DESCRIPTOR;
+
+// Table header
+typedef struct {
+    uint64_t Signature;
+    uint32_t Revision;
+    uint32_t HeaderSize;
+    uint32_t CRC32;
+    uint32_t Reserved;
+} EFI_TABLE_HEADER;
+
+// Simple Text Output Protocol
+typedef struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
+    void* Reset;
+    EFI_STATUS (*OutputString)(
+        struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* This,
+        CHAR16* String
+    );
+    void* TestString;
+    void* QueryMode;
+    void* SetMode;
+    void* SetAttribute;
+    EFI_STATUS (*ClearScreen)(
+        struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* This
+    );
+    void* SetCursorPosition;
+    void* EnableCursor;
+    void* Mode;
+} EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+
+// Simple Text Input Protocol
+typedef struct {
+    uint16_t ScanCode;
+    CHAR16 UnicodeChar;
+} EFI_INPUT_KEY;
+
+typedef struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
+    void* Reset;
+    EFI_STATUS (*ReadKeyStroke)(
+        struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL* This,
+        EFI_INPUT_KEY* Key
+    );
+    EFI_EVENT WaitForKey;
+} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+
+// Graphics Output Protocol
+typedef struct {
+    uint32_t RedMask;
+    uint32_t GreenMask;
+    uint32_t BlueMask;
+    uint32_t ReservedMask;
+} EFI_PIXEL_BITMASK;
+
+typedef enum {
+    PixelRedGreenBlueReserved8BitPerColor,
+    PixelBlueGreenRedReserved8BitPerColor,
+    PixelBitMask,
+    PixelBltOnly,
+    PixelFormatMax
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
+typedef struct {
+    uint32_t Version;
+    uint32_t HorizontalResolution;
+    uint32_t VerticalResolution;
+    EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
+    EFI_PIXEL_BITMASK PixelInformation;
+    uint32_t PixelsPerScanLine;
+} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+
+typedef struct {
+    uint32_t MaxMode;
+    uint32_t Mode;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* Info;
+    UINTN SizeOfInfo;
+    uint64_t FrameBufferBase;
+    UINTN FrameBufferSize;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+
+typedef struct _EFI_GRAPHICS_OUTPUT_PROTOCOL {
+    void* QueryMode;
+    void* SetMode;
+    void* Blt;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE* Mode;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+
+// File Protocol
+typedef struct _EFI_FILE_PROTOCOL {
+    uint64_t Revision;
+    EFI_STATUS (*Open)(
+        struct _EFI_FILE_PROTOCOL* This,
+        struct _EFI_FILE_PROTOCOL** NewHandle,
+        CHAR16* FileName,
+        uint64_t OpenMode,
+        uint64_t Attributes
+    );
+    EFI_STATUS (*Close)(struct _EFI_FILE_PROTOCOL* This);
+    void* Delete;
+    EFI_STATUS (*Read)(
+        struct _EFI_FILE_PROTOCOL* This,
+        UINTN* BufferSize,
+        void* Buffer
+    );
+    void* Write;
+    void* GetPosition;
+    void* SetPosition;
+    EFI_STATUS (*GetInfo)(
+        struct _EFI_FILE_PROTOCOL* This,
+        EFI_GUID* InformationType,
+        UINTN* BufferSize,
+        void* Buffer
+    );
+    void* SetInfo;
+    void* Flush;
+} EFI_FILE_PROTOCOL;
+
+// Simple File System Protocol
+typedef struct _EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
+    uint64_t Revision;
+    EFI_STATUS (*OpenVolume)(
+        struct _EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* This,
+        EFI_FILE_PROTOCOL** Root
+    );
+} EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
+
+// Loaded Image Protocol
+typedef struct {
+    uint32_t Revision;
+    EFI_HANDLE ParentHandle;
+    void* SystemTable;
+    EFI_HANDLE DeviceHandle;
+    void* FilePath;
+    void* Reserved;
+    uint32_t LoadOptionsSize;
+    void* LoadOptions;
+    void* ImageBase;
+    uint64_t ImageSize;
+    EFI_MEMORY_TYPE ImageCodeType;
+    EFI_MEMORY_TYPE ImageDataType;
+    void* Unload;
+} EFI_LOADED_IMAGE_PROTOCOL;
+
+// Boot Services
+typedef struct {
+    EFI_TABLE_HEADER Hdr;
+    
+    // Task Priority Services
+    void* RaiseTPL;
+    void* RestoreTPL;
+    
+    // Memory Services
+    EFI_STATUS (*AllocatePages)(
+        uint32_t Type,
+        EFI_MEMORY_TYPE MemoryType,
+        UINTN Pages,
+        uint64_t* Memory
+    );
+    EFI_STATUS (*FreePages)(
+        uint64_t Memory,
+        UINTN Pages
+    );
+    EFI_STATUS (*GetMemoryMap)(
+        UINTN* MemoryMapSize,
+        EFI_MEMORY_DESCRIPTOR* MemoryMap,
+        UINTN* MapKey,
+        UINTN* DescriptorSize,
+        uint32_t* DescriptorVersion
+    );
+    EFI_STATUS (*AllocatePool)(
+        EFI_MEMORY_TYPE PoolType,
+        UINTN Size,
+        void** Buffer
+    );
+    EFI_STATUS (*FreePool)(
+        void* Buffer
+    );
+    
+    // Event & Timer Services
+    void* CreateEvent;
+    void* SetTimer;
+    void* WaitForEvent;
+    void* SignalEvent;
+    void* CloseEvent;
+    void* CheckEvent;
+    
+    // Protocol Handler Services
+    void* InstallProtocolInterface;
+    void* ReinstallProtocolInterface;
+    void* UninstallProtocolInterface;
+    EFI_STATUS (*HandleProtocol)(
+        EFI_HANDLE Handle,
+        EFI_GUID* Protocol,
+        void** Interface
+    );
+    void* Reserved;
+    void* RegisterProtocolNotify;
+    EFI_STATUS (*LocateHandle)(
+        uint32_t SearchType,
+        EFI_GUID* Protocol,
+        void* SearchKey,
+        UINTN* BufferSize,
+        EFI_HANDLE* Buffer
+    );
+    void* LocateDevicePath;
+    void* InstallConfigurationTable;
+    
+    // Image Services
+    void* LoadImage;
+    void* StartImage;
+    EFI_STATUS (*Exit)(
+        EFI_HANDLE ImageHandle,
+        EFI_STATUS ExitStatus,
+        UINTN ExitDataSize,
+        CHAR16* ExitData
+    );
+    void* UnloadImage;
+    EFI_STATUS (*ExitBootServices)(
+        EFI_HANDLE ImageHandle,
+        UINTN MapKey
+    );
+    
+    // Miscellaneous Services
+    void* GetNextMonotonicCount;
+    void* Stall;
+    void* SetWatchdogTimer;
+    
+    // DriverSupport Services
+    void* ConnectController;
+    void* DisconnectController;
+    
+    // Open and Close Protocol Services
+    EFI_STATUS (*OpenProtocol)(
+        EFI_HANDLE Handle,
+        EFI_GUID* Protocol,
+        void** Interface,
+        EFI_HANDLE AgentHandle,
+        EFI_HANDLE ControllerHandle,
+        uint32_t Attributes
+    );
+    void* CloseProtocol;
+    void* OpenProtocolInformation;
+    
+    // Library Services
+    void* ProtocolsPerHandle;
+    EFI_STATUS (*LocateHandleBuffer)(
+        uint32_t SearchType,
+        EFI_GUID* Protocol,
+        void* SearchKey,
+        UINTN* NoHandles,
+        EFI_HANDLE** Buffer
+    );
+    EFI_STATUS (*LocateProtocol)(
+        EFI_GUID* Protocol,
+        void* Registration,
+        void** Interface
+    );
+} EFI_BOOT_SERVICES;
+
+// System Table
+typedef struct {
+    EFI_TABLE_HEADER Hdr;
+    CHAR16* FirmwareVendor;
+    uint32_t FirmwareRevision;
+    EFI_HANDLE ConsoleInHandle;
+    EFI_SIMPLE_TEXT_INPUT_PROTOCOL* ConIn;
+    EFI_HANDLE ConsoleOutHandle;
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* ConOut;
+    EFI_HANDLE StandardErrorHandle;
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* StdErr;
+    void* RuntimeServices;
+    EFI_BOOT_SERVICES* BootServices;
+    UINTN NumberOfTableEntries;
+    void* ConfigurationTable;
+} EFI_SYSTEM_TABLE;
+
+// =============================================================================
+// Genesis Boot Context Structure
+// =============================================================================
+
+typedef struct {
+    uint64_t magic;              // 0x4C314D31544C4535 "L1M1TLE55"
+    uint8_t boot_mode;           // 0x02 for UEFI
+    uint64_t memory_map_ptr;
+    uint64_t kernel_entry;
+    uint32_t display_mode;
+    void* initrd_base;
+    size_t initrd_size;
+    uint64_t framebuffer_base;
+    uint32_t framebuffer_width;
+    uint32_t framebuffer_height;
+    uint32_t framebuffer_pitch;
+} GenesisBootContext;
+
+// =============================================================================
+// Global Variables
+// =============================================================================
+
+static EFI_SYSTEM_TABLE* ST;
+static EFI_BOOT_SERVICES* BS;
+static EFI_HANDLE ImageHandle;
+static EFI_GRAPHICS_OUTPUT_PROTOCOL* GOP;
+static GenesisBootContext* BootContext;
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+static UINTN strlen16(const CHAR16* str) {
+    UINTN len = 0;
+    while (str[len]) len++;
+    return len;
+}
+
+static int strcmp16(const CHAR16* s1, const CHAR16* s2) {
+    while (*s1 && (*s1 == *s2)) {
+        s1++;
+        s2++;
+    }
+    return *s1 - *s2;
+}
+
+static void* memcpy(void* dest, const void* src, size_t n) {
+    uint8_t* d = dest;
+    const uint8_t* s = src;
+    while (n--) *d++ = *s++;
+    return dest;
+}
+
+static void* memset(void* s, int c, size_t n) {
+    uint8_t* p = s;
+    while (n--) *p++ = (uint8_t)c;
+    return s;
+}
+
+static void print(const CHAR16* str) {
+    ST->ConOut->OutputString(ST->ConOut, (CHAR16*)str);
+}
+
+static void print_hex(uint64_t value) {
+    CHAR16 buffer[20];
+    CHAR16* hex = L"0123456789ABCDEF";
+    int i = 18;
+    
+    buffer[19] = 0;
+    buffer[i--] = L'\n';
+    buffer[i--] = L'\r';
+    
+    do {
+        buffer[i--] = hex[value & 0xF];
+        value >>= 4;
+    } while (value && i >= 0);
+    
+    buffer[i--] = L'x';
+    buffer[i--] = L'0';
+    
+    print(&buffer[i + 1]);
+}
+
+// =============================================================================
+// Graphics Functions
+// =============================================================================
+
+static void draw_box(uint32_t x, uint32_t y, uint32_t width, uint32_t height, 
+                    uint32_t color) {
+    uint32_t* fb = (uint32_t*)GOP->Mode->FrameBufferBase;
+    uint32_t pitch = GOP->Mode->Info->PixelsPerScanLine;
+    
+    for (uint32_t j = y; j < y + height; j++) {
+        for (uint32_t i = x; i < x + width; i++) {
+            fb[j * pitch + i] = color;
+        }
+    }
+}
+
+static void draw_text(uint32_t x, uint32_t y, const CHAR16* text, uint32_t color) {
+    // Simple 8x16 font rendering (subset for demo)
+    static uint8_t font_8x16[256][16] = {
+        // Basic ASCII characters would be defined here
+        // For brevity, showing just structure
+    };
+    
+    uint32_t* fb = (uint32_t*)GOP->Mode->FrameBufferBase;
+    uint32_t pitch = GOP->Mode->Info->PixelsPerScanLine;
+    uint32_t cx = x, cy = y;
+    
+    while (*text) {
+        if (*text == L'\n') {
+            cx = x;
+            cy += 16;
+        } else if (*text < 128) {
+            // Render character (simplified)
+            for (int row = 0; row < 16; row++) {
+                for (int col = 0; col < 8; col++) {
+                    // In real implementation, check font bitmap
+                    if ((row + col) & 1) {  // Placeholder pattern
+                        fb[(cy + row) * pitch + (cx + col)] = color;
+                    }
+                }
+            }
+            cx += 8;
+        }
+        text++;
+    }
+}
+
+static void display_boot_menu(void) {
+    // Clear screen to dark background
+    draw_box(0, 0, GOP->Mode->Info->HorizontalResolution,
+             GOP->Mode->Info->VerticalResolution, 0x001B1B1B);
+    
+    uint32_t screen_width = GOP->Mode->Info->HorizontalResolution;
+    uint32_t screen_height = GOP->Mode->Info->VerticalResolution;
+    
+    // Draw menu box
+    uint32_t menu_width = 600;
+    uint32_t menu_height = 400;
+    uint32_t menu_x = (screen_width - menu_width) / 2;
+    uint32_t menu_y = (screen_height - menu_height) / 2;
+    
+    // Outer border
+    draw_box(menu_x - 2, menu_y - 2, menu_width + 4, menu_height + 4, 0x00FFFFFF);
+    draw_box(menu_x, menu_y, menu_width, menu_height, 0x002B2B2B);
+    
+    // Title bar
+    draw_box(menu_x, menu_y, menu_width, 60, 0x00404040);
+    
+    // Draw logo area
+    draw_box(menu_x + 20, menu_y + 80, 560, 2, 0x00606060);
+    
+    // Option boxes
+    draw_box(menu_x + 50, menu_y + 120, 500, 80, 0x00353535);  // Try LimitlessOS
+    draw_box(menu_x + 50, menu_y + 220, 500, 80, 0x00353535);  // Install LimitlessOS
+    
+    // Highlight for hover effect (default on first option)
+    draw_box(menu_x + 50, menu_y + 120, 500, 80, 0x00404545);
+}
+
+// =============================================================================
+// File Loading Functions
+// =============================================================================
+
+static EFI_STATUS load_file(const CHAR16* filename, void** buffer, UINTN* size) {
+    EFI_STATUS status;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fs;
+    EFI_FILE_PROTOCOL* root;
+    EFI_FILE_PROTOCOL* file;
+    EFI_GUID fs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_GUID loaded_image_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL* loaded_image;
+    
+    // Get loaded image protocol
+    status = BS->HandleProtocol(ImageHandle, &loaded_image_guid, 
+                                (void**)&loaded_image);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to get loaded image protocol\r\n");
+        return status;
+    }
+    
+    // Get file system protocol
+    status = BS->HandleProtocol(loaded_image->DeviceHandle, &fs_guid, 
+                                (void**)&fs);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to get file system protocol\r\n");
+        return status;
+    }
+    
+    // Open root directory
+    status = fs->OpenVolume(fs, &root);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to open root volume\r\n");
+        return status;
+    }
+    
+    // Open file
+    status = root->Open(root, &file, (CHAR16*)filename, 1, 0);  // 1 = read mode
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to open file: ");
+        print(filename);
+        print(L"\r\n");
+        return status;
+    }
+    
+    // Get file size
+    EFI_GUID file_info_guid = {0x09576e92, 0x6d3f, 0x11d2, 
+                               {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
+    UINTN info_size = 0;
+    status = file->GetInfo(file, &file_info_guid, &info_size, NULL);
+    
+    if (status == EFI_ERROR(4)) {  // Buffer too small, expected
+        uint8_t info_buffer[1024];
+        info_size = sizeof(info_buffer);
+        status = file->GetInfo(file, &file_info_guid, &info_size, info_buffer);
+        if (status == EFI_SUCCESS) {
+            *size = *(uint64_t*)(info_buffer + 8);  // FileSize offset
+        }
+    }
+    
+    // Allocate buffer
+    status = BS->AllocatePool(EfiLoaderData, *size, buffer);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to allocate buffer\r\n");
+        file->Close(file);
+        return status;
+    }
+    
+    // Read file
+    status = file->Read(file, size, *buffer);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to read file\r\n");
+        BS->FreePool(*buffer);
+        file->Close(file);
+        return status;
+    }
+    
+    file->Close(file);
+    return EFI_SUCCESS;
+}
+
+// =============================================================================
+// Boot Functions
+// =============================================================================
+
+static EFI_STATUS prepare_kernel_boot(void) {
+    EFI_STATUS status;
+    void* kernel_buffer;
+    void* initrd_buffer;
+    UINTN kernel_size;
+    UINTN initrd_size;
+    
+    print(L"Loading Continuum kernel...\r\n");
+    status = load_file(L"\\EFI\\limitless\\continuum.efi", &kernel_buffer, 
+                      &kernel_size);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to load kernel\r\n");
+        return status;
+    }
+    
+    print(L"Loading initial ramdisk...\r\n");
+    status = load_file(L"\\EFI\\limitless\\initrd.lfs", &initrd_buffer, 
+                      &initrd_size);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to load initrd\r\n");
+        return status;
+    }
+    
+    // Allocate pages for kernel at fixed address (1MB)
+    uint64_t kernel_base = 0x100000;
+    UINTN kernel_pages = (kernel_size + 4095) / 4096;
+    status = BS->AllocatePages(2, EfiLoaderCode, kernel_pages, &kernel_base);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to allocate kernel memory\r\n");
+        return status;
+    }
+    
+    // Copy kernel to allocated memory
+    memcpy((void*)kernel_base, kernel_buffer, kernel_size);
+    BS->FreePool(kernel_buffer);
+    
+    // Allocate boot context
+    status = BS->AllocatePool(EfiLoaderData, sizeof(GenesisBootContext), 
+                              (void**)&BootContext);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to allocate boot context\r\n");
+        return status;
+    }
+    
+    // Fill boot context
+    BootContext->magic = 0x4C314D31544C4535ULL;  // "L1M1TLE55"
+    BootContext->boot_mode = 0x02;                // UEFI boot
+    BootContext->kernel_entry = kernel_base;
+    BootContext->initrd_base = initrd_buffer;
+    BootContext->initrd_size = initrd_size;
+    
+    // Set graphics info
+    if (GOP) {
+        BootContext->framebuffer_base = GOP->Mode->FrameBufferBase;
+        BootContext->framebuffer_width = GOP->Mode->Info->HorizontalResolution;
+        BootContext->framebuffer_height = GOP->Mode->Info->VerticalResolution;
+        BootContext->framebuffer_pitch = GOP->Mode->Info->PixelsPerScanLine * 4;
+        BootContext->display_mode = 0x03;  // Graphics mode
+    }
+    
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS get_memory_map(void** map, UINTN* map_size, UINTN* map_key,
+                                 UINTN* desc_size, uint32_t* desc_version) {
+    EFI_STATUS status;
+    *map_size = 0;
+    
+    // Get required size
+    status = BS->GetMemoryMap(map_size, NULL, map_key, desc_size, desc_version);
+    if (status != EFI_ERROR(4)) {  // Buffer too small expected
+        return status;
+    }
+    
+    // Allocate buffer with extra space
+    *map_size += 2 * (*desc_size);
+    status = BS->AllocatePool(EfiLoaderData, *map_size, map);
+    if (status != EFI_SUCCESS) {
+        return status;
+    }
+    
+    // Get actual memory map
+    status = BS->GetMemoryMap(map_size, *map, map_key, desc_size, desc_version);
+    return status;
+}
+
+static void jump_to_kernel(void) {
+    EFI_STATUS status;
+    void* memory_map;
+    UINTN map_size, map_key, desc_size;
+    uint32_t desc_version;
+    
+    print(L"Getting final memory map...\r\n");
+    status = get_memory_map(&memory_map, &map_size, &map_key, 
+                           &desc_size, &desc_version);
+    if (status != EFI_SUCCESS) {
+        print(L"Failed to get memory map\r\n");
+        return;
+    }
+    
+    BootContext->memory_map_ptr = (uint64_t)memory_map;
+    
+    print(L"Exiting boot services...\r\n");
+    status = BS->ExitBootServices(ImageHandle, map_key);
+    if (status != EFI_SUCCESS) {
+        // Retry with fresh memory map
+        BS->FreePool(memory_map);
+        status = get_memory_map(&memory_map, &map_size, &map_key, 
+                               &desc_size, &desc_version);
+        if (status == EFI_SUCCESS) {
+            BootContext->memory_map_ptr = (uint64_t)memory_map;
+            status = BS->ExitBootServices(ImageHandle, map_key);
+        }
+        
+        if (status != EFI_SUCCESS) {
+            print(L"Failed to exit boot services\r\n");
+            return;
+        }
+    }
+    
+    // Call kernel entry point
+    typedef void (*kernel_entry_t)(GenesisBootContext*);
+    kernel_entry_t kernel_entry = (kernel_entry_t)BootContext->kernel_entry;
+    kernel_entry(BootContext);
+    
+    // Should never reach here
+    while (1) __asm__ __volatile__("hlt");
+}
+
+// =============================================================================
+// Menu Handling
+// =============================================================================
+
+static int handle_boot_menu(void) {
+    EFI_INPUT_KEY key;
+    EFI_STATUS status;
+    int selected = 1;  // Default to "Try LimitlessOS"
+    bool needs_redraw = true;
+    
+    // Clear any pending input
+    while (ST->ConIn->ReadKeyStroke(ST->ConIn, &key) == EFI_SUCCESS);
+    
+    while (1) {
+        if (needs_redraw) {
+            display_boot_menu();
+            
+            // Draw selection highlight
+            uint32_t menu_x = (GOP->Mode->Info->HorizontalResolution - 600) / 2;
+            uint32_t menu_y = (GOP->Mode->Info->VerticalResolution - 400) / 2;
+            
+            if (selected == 1) {
+                draw_box(menu_x + 45, menu_y + 115, 510, 90, 0x00505555);
+            } else {
+                draw_box(menu_x + 45, menu_y + 215, 510, 90, 0x00505555);
+            }
+            
+            needs_redraw = false;
+        }
+        
+        // Wait for key press
+        status = ST->ConIn->ReadKeyStroke(ST->ConIn, &key);
+        if (status == EFI_SUCCESS) {
+            if (key.ScanCode == 0x01) {  // Up arrow
+                if (selected > 1) {
+                    selected--;
+                    needs_redraw = true;
+                }
+            } else if (key.ScanCode == 0x02) {  // Down arrow
+                if (selected < 2) {
+                    selected++;
+                    needs_redraw = true;
+                }
+            } else if (key.UnicodeChar == L'\r') {  // Enter
+                return selected;
+            } else if (key.UnicodeChar == L'1') {
+                return 1;
+            } else if (key.UnicodeChar == L'2') {
+                return 2;
+            }
+        }
+        
+        // Small delay to prevent CPU spinning
+        BS->Stall(10000);  // 10ms
+    }
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
+EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE* system_table) {
+    EFI_STATUS status;
+    EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    
+    // Initialize globals
+    ImageHandle = image_handle;
+    ST = system_table;
+    BS = ST->BootServices;
+    
+    // Clear screen
+    ST->ConOut->ClearScreen(ST->ConOut);
+    
+    // Print banner
+    print(L"================== GENESIS UEFI BOOTLOADER ==================\r\n");
+    print(L"               LimitlessOS v1.0 - UEFI Mode                  \r\n");
+    print(L"==============================================================\r\n\r\n");
+    
+    // Locate Graphics Output Protocol
+    status = BS->LocateProtocol(&gop_guid, NULL, (void**)&GOP);
+    if (status != EFI_SUCCESS) {
+        print(L"Warning: Graphics Output Protocol not found\r\n");
+        print(L"Falling back to text mode\r\n");
+    } else {
+        print(L"Graphics initialized: ");
+        print_hex(GOP->Mode->Info->HorizontalResolution);
+        print(L" x ");
+        print_hex(GOP->Mode->Info->VerticalResolution);
+        print(L"\r\n");
+    }
+    
+    // Display boot menu and get choice
+    int choice = handle_boot_menu();
+    
+    // Clear screen for boot
+    if (GOP) {
+        draw_box(0, 0, GOP->Mode->Info->HorizontalResolution,
+                 GOP->Mode->Info->VerticalResolution, 0x00000000);
+    }
+    ST->ConOut->ClearScreen(ST->ConOut);
+    
+    if (choice == 1) {
+        print(L"Starting LimitlessOS Live Session...\r\n\r\n");
+        
+        // Prepare kernel boot
+        status = prepare_kernel_boot();
+        if (status != EFI_SUCCESS) {
+            print(L"Boot preparation failed!\r\n");
+            while (1);
+        }
+        
+        // Jump to kernel
+        jump_to_kernel();
+        
+    } else if (choice == 2) {
+        print(L"Starting LimitlessOS Installer...\r\n\r\n");
+        
+        // Load installer-specific kernel and initrd
+        void* installer_kernel;
+        void* installer_initrd;
+        UINTN installer_kernel_size;
+        UINTN installer_initrd_size;
+        
+        status = load_file(L"\\EFI\\limitless\\installer.efi", 
+                          &installer_kernel, &installer_kernel_size);
+        if (status != EFI_SUCCESS) {
+            print(L"Failed to load installer\r\n");
+            while (1);
+        }
+        
+        status = load_file(L"\\EFI\\limitless\\installer-initrd.lfs", 
+                          &installer_initrd, &installer_initrd_size);
+        if (status != EFI_SUCCESS) {
+            print(L"Failed to load installer initrd\r\n");
+            while (1);
+        }
+        
+        // Set up installer boot context
+        uint64_t installer_base = 0x100000;
+        UINTN installer_pages = (installer_kernel_size + 4095) / 4096;
+        BS->AllocatePages(2, EfiLoaderCode, installer_pages, &installer_base);
+        memcpy((void*)installer_base, installer_kernel, installer_kernel_size);
+        
+        BS->AllocatePool(EfiLoaderData, sizeof(GenesisBootContext), 
+                        (void**)&BootContext);
+        BootContext->magic = 0x4C314D31544C4535ULL;
+        BootContext->boot_mode = 0x02;
+        BootContext->kernel_entry = installer_base;
+        BootContext->initrd_base = installer_initrd;
+        BootContext->initrd_size = installer_initrd_size;
+        
+        if (GOP) {
+            BootContext->framebuffer_base = GOP->Mode->FrameBufferBase;
+            BootContext->framebuffer_width = GOP->Mode->Info->HorizontalResolution;
+            BootContext->framebuffer_height = GOP->Mode->Info->VerticalResolution;
+            BootContext->framebuffer_pitch = GOP->Mode->Info->PixelsPerScanLine * 4;
+        }
+        
+        // Jump to installer
+        jump_to_kernel();
+    }
+    
+    // Should never reach here
+    print(L"Boot failed - system halted\r\n");
+    while (1);
+    
+    return EFI_SUCCESS;
+}
