@@ -1,93 +1,72 @@
-# Genesis Bootloader Master Makefile
+# Genesis Bootloader Makefile
+# Builds both BIOS and UEFI bootloaders
 
-# Tools
-AS = nasm
-CC = gcc
-LD = ld
+# --- Tools ---
+# Use the native GCC for compiling UEFI code with gnu-efi
+CC_UEFI = gcc
+LD_UEFI = ld
+AS_BIOS = nasm
 OBJCOPY = objcopy
-MKISOFS = xorriso
-QEMU = qemu-system-x86_64
 
-# Directories
+# --- Flags ---
+# UEFI CFLAGS: Note the addition of -fpic, required for shared objects
+UEFI_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
+              -fshort-wchar -mno-red-zone -maccumulate-outgoing-args \
+              -I/usr/include/efi -I/usr/include/efi/x86_64 -fpic
+
+# UEFI LDFLAGS: Linker flags to create a shared object file
+UEFI_LDFLAGS = -nostdlib -shared -Bsymbolic -L/usr/lib \
+               /usr/lib/crt0-efi-x86_64.o -lgnuefi -lefi
+
+# BIOS Assembler Flags
+BIOS_FLAGS = -f bin
+
+# --- Directories ---
 BUILD_DIR = build
 OUTPUT_DIR = output
-STUB_DIR = stubs
 
-# Targets
-all: bios uefi boot-core iso
+# --- Targets ---
+.PHONY: all bios uefi clean
 
-# Create directories
-dirs:
-	@mkdir -p $(BUILD_DIR) $(OUTPUT_DIR) $(STUB_DIR)
+# Default target
+all: bios uefi
 
 # Build BIOS bootloader
-bios: dirs
-	@echo "Building BIOS bootloader..."
-	$(AS) -f bin genesis-bios.asm -o $(OUTPUT_DIR)/genesis-bios.bin
-	@echo "✓ BIOS bootloader built"
+bios: $(OUTPUT_DIR)/genesis-bios.bin
 
 # Build UEFI bootloader
-uefi: dirs
-	@echo "Building UEFI bootloader..."
-	@if [ -f genesis-uefi.c ]; then \
-		bash build-uefi.sh; \
-	else \
-		echo "Creating placeholder UEFI bootloader..."; \
-		echo -ne '\x4D\x5A' > $(OUTPUT_DIR)/genesis-uefi.efi; \
-	fi
-	@echo "✓ UEFI bootloader built"
+uefi: $(OUTPUT_DIR)/genesis-uefi.efi
 
-# Build boot core
-boot-core: dirs
-	@echo "Building Genesis boot core..."
-	@make -f genesis_boot.mk
-	@mv genesis_boot.bin $(OUTPUT_DIR)/
-	@echo "✓ Boot core built"
+# --- Build Rules ---
 
-# Build stub kernel for testing
-stub-kernel: dirs
-	@echo "Creating stub kernel..."
-	@bash create-stub-kernel.sh
-	@echo "✓ Stub kernel created"
+# Rule to build the BIOS bootloader
+$(OUTPUT_DIR)/genesis-bios.bin: genesis-bios.asm
+	@mkdir -p $(OUTPUT_DIR)
+	@echo "Building BIOS bootloader..."
+	$(AS_BIOS) $(BIOS_FLAGS) $< -o $@
+	@echo "✓ BIOS bootloader built: $@"
 
-# Build ISO
-iso: bios uefi stub-kernel
-	@echo "Building hybrid ISO..."
-	@bash create-hybrid-iso.sh
-	@echo "✓ ISO created"
+# Step 1: Compile UEFI C source to a relocatable object file (.o)
+$(BUILD_DIR)/genesis-uefi.o: genesis-uefi.c
+	@mkdir -p $(BUILD_DIR)
+	@echo "Compiling UEFI source..."
+	$(CC_UEFI) $(UEFI_CFLAGS) -c $< -o $@
 
-# Quick ISO (no rebuild)
-quick-iso:
-	@bash create-hybrid-iso.sh --quick
+# Step 2: Link the object file into a shared object (.so)
+$(BUILD_DIR)/genesis-uefi.so: $(BUILD_DIR)/genesis-uefi.o
+	@echo "Linking UEFI shared object..."
+	$(LD_UEFI) $(UEFI_LDFLAGS) -o $@ $<
 
-# Testing targets
-test: test-bios test-uefi
+# Step 3: Convert the shared object into the final EFI executable
+$(OUTPUT_DIR)/genesis-uefi.efi: $(BUILD_DIR)/genesis-uefi.so
+	@mkdir -p $(OUTPUT_DIR)
+	@echo "Creating EFI executable..."
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic -j .dynsym \
+	           -j .rel -j .rela -j .rel.* -j .rela.* -j .reloc \
+	           --target=efi-app-x86_64 $< $@
+	@echo "✓ UEFI bootloader built: $@"
 
-test-bios:
-	@echo "Testing BIOS boot..."
-	$(QEMU) -m 2048 -drive file=$(OUTPUT_DIR)/genesis-bios.bin,format=raw
-
-test-uefi:
-	@echo "Testing UEFI boot..."
-	$(QEMU) -m 2048 -bios /usr/share/ovmf/OVMF.fd \
-		-drive file=$(OUTPUT_DIR)/genesis-uefi.efi,format=raw
-
-test-iso:
-	@echo "Testing ISO..."
-	@bash test-iso.sh
-
-# Clean
+# Clean build artifacts
 clean:
-	rm -rf $(BUILD_DIR) $(OUTPUT_DIR) $(STUB_DIR)
-	rm -f *.o *.elf *.bin
-
-# Install dependencies
-deps:
-	@echo "Checking dependencies..."
-	@which nasm > /dev/null || echo "Need: sudo apt-get install nasm"
-	@which qemu-system-x86_64 > /dev/null || echo "Need: sudo apt-get install qemu-system-x86"
-	@which xorriso > /dev/null || echo "Need: sudo apt-get install xorriso"
-	@which x86_64-elf-gcc > /dev/null || echo "Need: cross-compiler toolchain"
-	@echo "✓ Dependency check complete"
-
-.PHONY: all dirs bios uefi boot-core stub-kernel iso quick-iso test test-bios test-uefi test-iso clean deps
+	@echo "Cleaning Genesis build files..."
+	@rm -rf $(BUILD_DIR) $(OUTPUT_DIR)
